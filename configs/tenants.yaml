@@ -1,0 +1,73 @@
+# 示例租户配置
+# 实际部署时，此文件或 etcd key 由 TenantConfigStore 加载。
+
+tenants:
+  - id: "tenant_001"
+    name: "示例租户"
+    status: active
+
+    model_config:
+      model_name: "deepseek-chat"
+      max_tokens: 4096
+      temperature: 0.7
+      timeout_seconds: 60
+      fallback_model: "gpt-4o-mini"
+      fallback_message: "系统繁忙，请稍后重试"
+
+    tool_permissions:
+      mode: "allowlist"
+      tools:
+        - "web_search"
+        - "code_interpreter"
+        - "memory_search"
+      dangerous_tools:
+        - "code_interpreter"
+      require_confirmation_for_dangerous: true
+
+    im_channel_configs:
+      - channel_type: "wecom"
+        enabled: true
+        # webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+        # token: "your_token"
+        # encoding_aes_key: "your_aes_key"
+        # corp_id: "your_corp_id"
+
+    data_backend_config:
+      type: "redis"
+      dsn: "127.0.0.1:6379"
+      max_connections: 10
+
+    audit_policy:
+      level: "full"
+      retention_days: 90
+      log_tool_arguments: true
+      mask_sensitive_data: true
+
+    rate_limits:
+      requests_per_second: 100
+      tokens_per_month: 10000000
+      concurrent_sessions: 50
+
+  - id: "tenant_002"
+    name: "开发测试租户"
+    status: active
+
+    model_config:
+      model_name: "deepseek-chat"
+      max_tokens: 2048
+
+    tool_permissions:
+      mode: "allowlist"
+      tools:
+        - "web_search"
+
+    data_backend_config:
+      type: "inmemory"
+      # inmemory 后端无需 dsn
+
+    audit_policy:
+      level: "minimal"
+      retention_days: 7
+
+    rate_limits:
+      requests_per_second: 10
