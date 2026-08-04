@@ -1,4 +1,4 @@
-package research
+package types
 
 import (
 	"encoding/json"
@@ -42,9 +42,9 @@ const (
 )
 
 // NewStreamEvent creates a StreamEvent with a timestamp and node set.
-func NewStreamEvent(eventType, node string, content string) StreamEvent {
+func NewStreamEvent(evenrType, node string, content string) StreamEvent {
 	return StreamEvent{
-		Type:      eventType,
+		Type:      evenrType,
 		Node:      node,
 		Timestamp: time.Now().UnixMilli(),
 		Content:   content,

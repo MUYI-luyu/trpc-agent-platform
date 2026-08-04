@@ -1,4 +1,4 @@
-package research
+package types
 
 // ─── Prompts ─────────────────────────────────────────────────────────────
 //
@@ -139,3 +139,19 @@ const PromptInvestigateSimple = `You are a research investigator. Answer the use
 4. **Cite what you know.** Reference well-known facts, papers, or systems where relevant.
 
 Provide a comprehensive analysis based on the question and the initial analysis above.`
+
+// PromptSet bundles the system prompts for all three nodes.
+type PromptSet struct {
+	ClarifySystem     string
+	InvestigateSystem string
+	SynthesizeSystem  string
+}
+
+// DefaultPrompts returns a PromptSet populated with the built-in prompt constants.
+func DefaultPrompts() *PromptSet {
+	return &PromptSet{
+		ClarifySystem:     PromptClarifySystem,
+		InvestigateSystem: PromptInvestigateSystem,
+		SynthesizeSystem:  PromptSynthesizeSystem,
+	}
+}

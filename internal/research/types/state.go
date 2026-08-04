@@ -1,7 +1,7 @@
 // Package research implements the Research Agent, a 3-Node Graph Agent that
 // validates all platform capabilities (Branch, Fan-out, Tool Calling, Streaming,
 // Session, Memory, Filter, Tracing).
-package research
+package types
 
 import (
 	"reflect"
@@ -35,6 +35,9 @@ const (
 	StateKeyAllowedTools = "research_allowed_tools"
 	// StateKeyStreamWriter holds the SSE event pusher (StreamWriter). Not persisted.
 	StateKeyStreamWriter = "research_stream_writer"
+	// StateKeyFindings holds structured research findings extracted from tool
+	// results ([]Finding). Written by Investigate, consumed by Synthesize.
+	StateKeyFindings = "research_findings"
 )
 
 // ─── Action constants ───────────────────────────────────────────────────
@@ -50,6 +53,26 @@ const (
 const (
 	DefaultMaxRounds = 5
 )
+
+// ─── Finding types ──────────────────────────────────────────────────────
+
+// Finding is a structured research finding extracted from tool results.
+// It decouples raw tool output from the Synthesize prompt, giving Synthesize
+// verified claims rather than forcing it to parse raw machine logs.
+type Finding struct {
+	// Claim is the factual assertion extracted from a source.
+	Claim string `json:"claim"`
+	// Evidence lists the sources supporting this claim.
+	Evidence []Source `json:"evidence"`
+	// Confidence indicates how reliable the claim is: "high", "medium", "low".
+	Confidence string `json:"confidence"`
+}
+
+// Source is a reference to where a finding came from.
+type Source struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
 
 // ─── State helpers ──────────────────────────────────────────────────────
 
@@ -72,6 +95,7 @@ func NewResearchState(query, tenantID, sessionID string, maxRounds int, allowedT
 		StateKeyMaxRounds:    maxRounds,
 		StateKeyAllowedTools: allowedTools,
 		StateKeyStreamWriter: sw,
+		StateKeyFindings:     []Finding{},
 	}
 }
 
@@ -119,5 +143,18 @@ func NewResearchStateSchema() *graph.StateSchema {
 			Type:            reflect.TypeOf((*StreamWriter)(nil)).Elem(),
 			Reducer:         graph.DefaultReducer,
 			DisableDeepCopy: true,
+		}).
+		AddField(StateKeyFindings, graph.StateField{
+			Type:    reflect.TypeOf([]Finding{}),
+			Reducer: graph.DefaultReducer,
+			Default: func() any { return []Finding{} },
 		})
+}
+
+// truncateForLog truncates a string to maxLen for logging purposes.
+func TruncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
