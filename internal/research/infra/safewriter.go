@@ -1,9 +1,11 @@
-package research
+package infra
 
 import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/types"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +20,7 @@ type SafeStreamWriter struct {
 	ctx     context.Context
 
 	// broken is set atomically when the connection is detected as broken.
-	// Once true, all subsequent Write calls return ErrConnectionBroken
+	// Once true, all subsequent Write calls return types.ErrConnectionBroken
 	// without blocking — this is the fast-path skip.
 	broken atomic.Bool
 
@@ -28,7 +30,7 @@ type SafeStreamWriter struct {
 }
 
 // compile-time interface conformance check
-var _ StreamWriter = (*SafeStreamWriter)(nil)
+var _ types.StreamWriter = (*SafeStreamWriter)(nil)
 
 // NewSafeStreamWriter creates a SafeStreamWriter wrapping an HTTP response
 // writer. The caller must ensure w implements http.Flusher and set the
@@ -49,11 +51,11 @@ func NewSafeStreamWriter(w http.ResponseWriter, ctx context.Context) (*SafeStrea
 // Write marshals the event as an SSE data frame and writes it to the
 // underlying connection with a 2-second timeout. After the first write
 // failure (including timeout), the connection is marked broken and all
-// subsequent calls return ErrConnectionBroken without blocking.
-func (w *SafeStreamWriter) Write(event StreamEvent) error {
+// subsequent calls return types.ErrConnectionBroken without blocking.
+func (w *SafeStreamWriter) Write(event types.StreamEvent) error {
 	// Fast path: connection is already known to be broken.
 	if w.broken.Load() {
-		return ErrConnectionBroken
+		return types.ErrConnectionBroken
 	}
 
 	// Check if the request context has been cancelled (client disconnect).
@@ -71,7 +73,7 @@ func (w *SafeStreamWriter) Write(event StreamEvent) error {
 	// Re-check after acquiring the lock (another goroutine may have marked
 	// it broken in the meantime).
 	if w.broken.Load() {
-		return ErrConnectionBroken
+		return types.ErrConnectionBroken
 	}
 
 	// Marshal the event to SSE format.
@@ -103,7 +105,7 @@ func (w *SafeStreamWriter) Write(event StreamEvent) error {
 		return w.ctx.Err()
 	case <-time.After(2 * time.Second):
 		w.broken.Store(true)
-		return ErrWriteTimeout
+		return types.ErrWriteTimeout
 	}
 }
 
