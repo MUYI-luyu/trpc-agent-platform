@@ -478,7 +478,7 @@ func NewWebSearchFunc(cfg SearchBackendConfig) func(ctx context.Context, query s
 	case "builtin":
 		return duckduckgoSearch
 	default:
-		return duckduckgoSearch // DuckDuckGo — free, unlimited, works through proxy
+		return duckduckgoSearch
 	}
 }
 

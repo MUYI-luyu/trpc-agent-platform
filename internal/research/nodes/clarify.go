@@ -122,15 +122,6 @@ func buildClarifyRequest(systemPrompt, query string, config *types.Config) *mode
 			Temperature: &t,
 			MaxTokens:   &maxT,
 		},
-		StructuredOutput: &model.StructuredOutput{
-			Type: model.StructuredOutputJSONSchema,
-			JSONSchema: &model.JSONSchemaConfig{
-				Name:        "clarify_action",
-				Description: "Routing decision for the user query",
-				Schema:      clarifyActionSchema,
-				Strict:      true,
-			},
-		},
 	}
 }
 

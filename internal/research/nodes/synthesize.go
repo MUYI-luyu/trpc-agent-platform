@@ -78,12 +78,24 @@ func prioritizeMessages(all []model.Message) []model.Message {
 	// Separate messages by type.
 	var queryClarify, findings, progress, toolResults, allThink, allToolCalls []model.Message
 
+	// Only keep the LAST user message (current query) to avoid
+	// session pollution from previous unrelated conversations.
+	var lastUserMsg model.Message
+	for _, msg := range all {
+		if msg.Role == model.RoleUser {
+			lastUserMsg = msg
+		}
+	}
+	if lastUserMsg.Content != "" {
+		queryClarify = append(queryClarify, lastUserMsg)
+	}
+
 	for _, msg := range all {
 		content := msg.Content
 
 		switch {
 		case msg.Role == model.RoleUser:
-			queryClarify = append(queryClarify, msg)
+			// skip — only last user message kept above
 		case strings.Contains(content, "[Clarify - Analysis]"):
 			queryClarify = append(queryClarify, msg)
 		case strings.Contains(content, "[Investigate - Findings]"):
@@ -148,6 +160,7 @@ func generateReport(ctx context.Context, llm LLMClient, req *model.Request, sw t
 		_ = sw.Write(types.NewStreamEvent(types.EventThinkStart, nodeName, "正在生成报告..."))
 	}
 
+	var finishReason *string
 	for rsp := range eventCh {
 		if rsp.Error != nil {
 			return report.String(), fmt.Errorf("synthesize API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
@@ -155,6 +168,9 @@ func generateReport(ctx context.Context, llm LLMClient, req *model.Request, sw t
 
 		if len(rsp.Choices) == 0 {
 			continue
+		}
+		if !rsp.IsPartial {
+			finishReason = rsp.Choices[0].FinishReason
 		}
 
 		if rsp.IsPartial {
@@ -172,6 +188,10 @@ func generateReport(ctx context.Context, llm LLMClient, req *model.Request, sw t
 	}
 
 	fullReport := report.String()
+
+	if finishReason != nil {
+		log.Printf("[synthesize] finish_reason=%q reportLen=%d", *finishReason, len(fullReport))
+	}
 
 	// Send the complete report as a single event.
 	if sw != nil && fullReport != "" {

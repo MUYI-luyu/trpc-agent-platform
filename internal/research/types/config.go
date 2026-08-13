@@ -64,7 +64,7 @@ func DefaultConfig() *Config {
 		ClarifyMaxTokens:      1024,
 		ClarifyConfidenceMin:  0.85,
 		SynthesizeTemperature: 0.3,
-		SynthesizeMaxTokens:   4096,
+		SynthesizeMaxTokens:   8192,
 		SSETimeout:            2 * time.Second,
 		LockTimeout:           30 * time.Second,
 		MaxSourceAge:          17520 * time.Hour, // 2 years
