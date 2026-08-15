@@ -8,6 +8,7 @@ import (
 
 	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/infra"
 	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/types"
+	"github.com/MUYI-luyu/trpc-agent-platform/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
@@ -147,8 +148,12 @@ func buildSynthesizeRequest(systemPrompt, query string, messages []model.Message
 // ─── Report generation ───────────────────────────────────────────────────
 
 func generateReport(ctx context.Context, llm LLMClient, req *model.Request, sw types.StreamWriter) (string, error) {
+	ctx, span := telemetry.SpanLLM(ctx, llm.Info().Name)
+	defer span.End()
+
 	eventCh, err := llm.GenerateContent(ctx, req)
 	if err != nil {
+		telemetry.RecordError(ctx, err)
 		return "", fmt.Errorf("generate content: %w", err)
 	}
 
@@ -161,9 +166,15 @@ func generateReport(ctx context.Context, llm LLMClient, req *model.Request, sw t
 	}
 
 	var finishReason *string
+	var lastUsage *model.Usage
 	for rsp := range eventCh {
+		if rsp.Usage != nil {
+			lastUsage = rsp.Usage
+		}
 		if rsp.Error != nil {
-			return report.String(), fmt.Errorf("synthesize API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
+			err := fmt.Errorf("synthesize API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
+			telemetry.RecordError(ctx, err)
+			return report.String(), err
 		}
 
 		if len(rsp.Choices) == 0 {
@@ -188,6 +199,10 @@ func generateReport(ctx context.Context, llm LLMClient, req *model.Request, sw t
 	}
 
 	fullReport := report.String()
+
+	if lastUsage != nil {
+		telemetry.SetTokenUsage(ctx, lastUsage.PromptTokens, lastUsage.CompletionTokens)
+	}
 
 	if finishReason != nil {
 		log.Printf("[synthesize] finish_reason=%q reportLen=%d", *finishReason, len(fullReport))

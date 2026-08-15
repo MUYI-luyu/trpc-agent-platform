@@ -1,0 +1,16 @@
+# Nested legacy platform repo — kept locally only, not part of this project.
+/trpc-agent-platform/
+
+# Build outputs
+/research-demo
+/platform
+/wecom-verify
+*.exe
+*.test
+*.out
+
+# Local tooling
+/.claude/
+.idea/
+.vscode/
+.DS_Store

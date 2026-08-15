@@ -273,6 +273,46 @@ func TestClarifyNode_ContextCancellation(t *testing.T) {
 	}
 }
 
+// ─── Request building tests ───────────────────────────────────────────────
+
+func TestBuildClarifyRequest_IncludesHistory(t *testing.T) {
+	history := []model.Message{
+		model.NewUserMessage("Raft是什么"),
+		model.NewAssistantMessage("Raft 是一种共识算法。"),
+	}
+	req := buildClarifyRequest("system prompt", "它的选举过程呢？", history, types.DefaultConfig())
+
+	if len(req.Messages) != 4 {
+		t.Fatalf("len(req.Messages) = %d, want 4 (system + 2 history + query)", len(req.Messages))
+	}
+	if req.Messages[0].Role != model.RoleSystem {
+		t.Errorf("messages[0].Role = %q, want system", req.Messages[0].Role)
+	}
+	if req.Messages[1].Content != "Raft是什么" || req.Messages[1].Role != model.RoleUser {
+		t.Errorf("messages[1] = %+v, want history user", req.Messages[1])
+	}
+	if req.Messages[2].Content != "Raft 是一种共识算法。" || req.Messages[2].Role != model.RoleAssistant {
+		t.Errorf("messages[2] = %+v, want history assistant", req.Messages[2])
+	}
+	if req.Messages[3].Content != "它的选举过程呢？" || req.Messages[3].Role != model.RoleUser {
+		t.Errorf("messages[3] = %+v, want current query", req.Messages[3])
+	}
+}
+
+func TestBuildClarifyRequest_NoHistory(t *testing.T) {
+	req := buildClarifyRequest("system prompt", "Raft是什么", nil, types.DefaultConfig())
+
+	if len(req.Messages) != 2 {
+		t.Fatalf("len(req.Messages) = %d, want 2 (system + query)", len(req.Messages))
+	}
+	if req.Messages[0].Role != model.RoleSystem {
+		t.Errorf("messages[0].Role = %q, want system", req.Messages[0].Role)
+	}
+	if req.Messages[1].Role != model.RoleUser || req.Messages[1].Content != "Raft是什么" {
+		t.Errorf("messages[1] = %+v, want current query", req.Messages[1])
+	}
+}
+
 // ─── Logprobs confidence tests ───────────────────────────────────────────
 
 func TestComputeConfidence(t *testing.T) {

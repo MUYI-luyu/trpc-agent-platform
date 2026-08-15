@@ -5,9 +5,19 @@ import (
 	"testing"
 
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 
 	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/types"
 )
+
+// mockModel is a minimal model.Model used to test model selection.
+type mockModel struct{ name string }
+
+func (m mockModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	return nil, nil
+}
+
+func (m mockModel) Info() model.Info { return model.Info{Name: m.name} }
 
 func TestBuildGraph_Compiles(t *testing.T) {
 	g, err := BuildGraph()
@@ -82,6 +92,26 @@ func TestNewResearchState_Defaults(t *testing.T) {
 	}
 	if tools, _ := graph.GetStateValue[[]string](state, types.StateKeyAllowedTools); len(tools) != 3 {
 		t.Errorf("allowedTools len = %d, want 3", len(tools))
+	}
+}
+
+func TestResolveModel(t *testing.T) {
+	fallback := mockModel{name: "default-model"}
+	override := mockModel{name: "tenant-model"}
+
+	// No override → fallback.
+	if got := resolveModel(graph.State{}, fallback); got != fallback {
+		t.Fatalf("resolveModel(no override) = %v, want fallback %v", got, fallback)
+	}
+
+	// Override present → override wins.
+	if got := resolveModel(graph.State{types.StateKeyModel: override}, fallback); got != override {
+		t.Fatalf("resolveModel(override) = %v, want override %v", got, override)
+	}
+
+	// Nil fallback with no override → nil (no model configured).
+	if got := resolveModel(graph.State{}, nil); got != nil {
+		t.Fatalf("resolveModel(nil fallback) = %v, want nil", got)
 	}
 }
 

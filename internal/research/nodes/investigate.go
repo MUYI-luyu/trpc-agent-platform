@@ -10,6 +10,7 @@ import (
 
 	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/infra"
 	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/types"
+	"github.com/MUYI-luyu/trpc-agent-platform/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -326,17 +327,27 @@ func (r *SimpleLLMInvestigateRunner) Run(ctx context.Context, state InvestigateS
 		GenerationConfig: model.GenerationConfig{Stream: true},
 	}
 
+	ctx, span := telemetry.SpanLLM(ctx, r.llm.Info().Name)
+	defer span.End()
+
 	eventCh, err := r.llm.GenerateContent(ctx, req)
 	if err != nil {
+		telemetry.RecordError(ctx, err)
 		return messages, fmt.Errorf("investigate: LLM call failed: %w", err)
 	}
 
 	// Aggregate all content first.
 	var content strings.Builder
+	var lastUsage *model.Usage
 	hasDeltas := false
 	for rsp := range eventCh {
+		if rsp.Usage != nil {
+			lastUsage = rsp.Usage
+		}
 		if rsp.Error != nil {
-			return messages, fmt.Errorf("investigate API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
+			err := fmt.Errorf("investigate API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
+			telemetry.RecordError(ctx, err)
+			return messages, err
 		}
 		if len(rsp.Choices) == 0 {
 			continue
@@ -353,6 +364,10 @@ func (r *SimpleLLMInvestigateRunner) Run(ctx context.Context, state InvestigateS
 				content.WriteString(msg.Content)
 			}
 		}
+	}
+
+	if lastUsage != nil {
+		telemetry.SetTokenUsage(ctx, lastUsage.PromptTokens, lastUsage.CompletionTokens)
 	}
 
 	fullContent := content.String()
@@ -407,6 +422,14 @@ func (r *RealInvestigateRunner) Run(ctx context.Context, state InvestigateState)
 		maxRounds = types.DefaultMaxRounds
 	}
 
+	// Resolve the tool set for this request. An explicit allowlist (even an
+	// empty one) filters the pool; a nil allowlist means "no policy — use
+	// all tools".
+	tools := r.tools
+	if state.AllowedTools != nil {
+		tools = filterTools(r.tools, state.AllowedTools)
+	}
+
 	for round := 1; round <= maxRounds; round++ {
 		select {
 		case <-ctx.Done():
@@ -421,13 +444,13 @@ func (r *RealInvestigateRunner) Run(ctx context.Context, state InvestigateState)
 		}
 
 		// 2. Build request with system prompt + tools + messages.
-		sysPrompt := r.buildSystemPrompt(state, round, maxRounds)
+		sysPrompt := r.buildSystemPrompt(state, round, maxRounds, tools)
 		req := &model.Request{
 			Messages: append(
 				[]model.Message{model.NewSystemMessage(sysPrompt)},
 				messages...,
 			),
-			Tools:            r.tools,
+			Tools:            tools,
 			GenerationConfig: model.GenerationConfig{Stream: true},
 		}
 
@@ -485,7 +508,7 @@ func (r *RealInvestigateRunner) Run(ctx context.Context, state InvestigateState)
 					fmt.Sprintf("调用 %s...", tc.Function.Name))
 			}
 
-			toolResult, toolErr := r.executeTool(ctx, tc)
+			toolResult, toolErr := r.executeTool(ctx, tools, tc)
 
 			// Append tool call + result to messages.
 			argsJSON, _ := json.Marshal(tc.Function.Arguments)
@@ -585,18 +608,28 @@ func (r *RealInvestigateRunner) callLLMWithoutTools(ctx context.Context, message
 
 // callLLM calls the model and aggregates the streaming response.
 func (r *RealInvestigateRunner) callLLM(ctx context.Context, req *model.Request) (*callResult, error) {
+	ctx, span := telemetry.SpanLLM(ctx, r.llm.Info().Name)
+	defer span.End()
+
 	eventCh, err := r.llm.GenerateContent(ctx, req)
 	if err != nil {
+		telemetry.RecordError(ctx, err)
 		return nil, fmt.Errorf("generate: %w", err)
 	}
 
 	result := &callResult{}
 	var content strings.Builder
+	var lastUsage *model.Usage
 	hasDeltas := false
 
 	for evt := range eventCh {
+		if evt.Usage != nil {
+			lastUsage = evt.Usage
+		}
 		if evt.Error != nil {
-			return result, fmt.Errorf("API: %s: %s", evt.Error.Type, evt.Error.Message)
+			err := fmt.Errorf("API: %s: %s", evt.Error.Type, evt.Error.Message)
+			telemetry.RecordError(ctx, err)
+			return result, err
 		}
 		if len(evt.Choices) == 0 {
 			continue
@@ -617,20 +650,34 @@ func (r *RealInvestigateRunner) callLLM(ctx context.Context, req *model.Request)
 		}
 	}
 
+	if lastUsage != nil {
+		telemetry.SetTokenUsage(ctx, lastUsage.PromptTokens, lastUsage.CompletionTokens)
+	}
+
 	result.content = content.String()
 	return result, nil
 }
 
-// executeTool looks up a tool by name, calls it, and returns its result as JSON.
-func (r *RealInvestigateRunner) executeTool(ctx context.Context, tc model.ToolCall) (string, error) {
-	t, ok := r.tools[tc.Function.Name]
+// executeTool looks up a tool by name in the (already filtered) tool set, calls
+// it, and returns its result as JSON. Using the filtered set (rather than
+// r.tools) is the defense-in-depth layer: even if the model hallucinates a tool
+// name that was filtered out of the request, it cannot be invoked here.
+func (r *RealInvestigateRunner) executeTool(ctx context.Context, tools map[string]tool.Tool, tc model.ToolCall) (string, error) {
+	ctx, span := telemetry.SpanTool(ctx, tc.Function.Name)
+	defer span.End()
+
+	t, ok := tools[tc.Function.Name]
 	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", tc.Function.Name)
+		err := fmt.Errorf("tool not allowed or unknown: %s", tc.Function.Name)
+		telemetry.RecordError(ctx, err)
+		return "", err
 	}
 
 	callable, ok := t.(tool.CallableTool)
 	if !ok {
-		return "", fmt.Errorf("tool %s is not callable", tc.Function.Name)
+		err := fmt.Errorf("tool %s is not callable", tc.Function.Name)
+		telemetry.RecordError(ctx, err)
+		return "", err
 	}
 
 	args := tc.Function.Arguments
@@ -640,6 +687,7 @@ func (r *RealInvestigateRunner) executeTool(ctx context.Context, tc model.ToolCa
 
 	result, err := callable.Call(ctx, args)
 	if err != nil {
+		telemetry.RecordError(ctx, err)
 		return "", err
 	}
 
@@ -651,6 +699,24 @@ func (r *RealInvestigateRunner) executeTool(ctx context.Context, tc model.ToolCa
 	log.Printf("[investigate] executeTool name=%q raw_result(first 500 chars)=%q",
 		tc.Function.Name, types.TruncateForLog(raw, 500))
 	return raw, nil
+}
+
+// filterTools returns the subset of all whose names are in the allowed set.
+// It is the enforcement point for per-tenant tool allow/blocklists: both the
+// tools sent to the LLM and the tools looked up in executeTool come from this
+// filtered map, so a disallowed tool can neither be offered nor invoked.
+func filterTools(all map[string]tool.Tool, allowed []string) map[string]tool.Tool {
+	out := make(map[string]tool.Tool, len(allowed))
+	set := make(map[string]bool, len(allowed))
+	for _, n := range allowed {
+		set[n] = true
+	}
+	for name, t := range all {
+		if set[name] {
+			out[name] = t
+		}
+	}
+	return out
 }
 
 // synthesizeFallbackContent extracts key findings from tool results collected
@@ -684,13 +750,14 @@ func (r *RealInvestigateRunner) synthesizeFallbackContent(messages []model.Messa
 		round, strings.Join(parts, "\n\n"))
 }
 
-// toolDescriptions builds a human-readable list of available tools.
-func (r *RealInvestigateRunner) toolDescriptions() string {
-	if len(r.tools) == 0 {
+// toolDescriptions builds a human-readable list of the tools available to this
+// request (i.e. the already filtered set).
+func toolDescriptions(tools map[string]tool.Tool) string {
+	if len(tools) == 0 {
 		return "(No tools available — use your training knowledge to answer the question.)"
 	}
 	var b strings.Builder
-	for name, t := range r.tools {
+	for name, t := range tools {
 		fmt.Fprintf(&b, "- **%s**: %s\n", name, t.Declaration().Description)
 	}
 	return b.String()
@@ -894,11 +961,11 @@ func formatFindingsForPrompt(findings []types.Finding) string {
 // buildSystemPrompt constructs the investigate system prompt with all
 // placeholders replaced: {{query}}, {{tools}}, {{clarify_analysis}},
 // {{round}}, {{max_rounds}}.
-func (r *RealInvestigateRunner) buildSystemPrompt(state InvestigateState, round, maxRounds int) string {
+func (r *RealInvestigateRunner) buildSystemPrompt(state InvestigateState, round, maxRounds int, tools map[string]tool.Tool) string {
 	if r.prompts != nil && r.prompts.InvestigateSystem != "" {
 		prompt := r.prompts.InvestigateSystem
 		prompt = strings.ReplaceAll(prompt, "{{query}}", state.Query)
-		prompt = strings.ReplaceAll(prompt, "{{tools}}", r.toolDescriptions())
+		prompt = strings.ReplaceAll(prompt, "{{tools}}", toolDescriptions(tools))
 		prompt = strings.ReplaceAll(prompt, "{{clarify_analysis}}", extractClarifyAnalysis(state.Messages))
 		prompt = strings.ReplaceAll(prompt, "{{round}}", fmt.Sprintf("%d", round))
 		prompt = strings.ReplaceAll(prompt, "{{max_rounds}}", fmt.Sprintf("%d", maxRounds))

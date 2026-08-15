@@ -111,6 +111,15 @@ func defaultGraphConfig() *GraphConfig {
 	}
 }
 
+// resolveModel returns the per-request model from graph state, falling back to
+// the graph's default model when no tenant-specific override was injected.
+func resolveModel(state graph.State, fallback model.Model) model.Model {
+	if m, ok := graph.GetStateValue[model.Model](state, types.StateKeyModel); ok && m != nil {
+		return m
+	}
+	return fallback
+}
+
 // ─── Conditional routing ─────────────────────────────────────────────────
 
 // clarifyRouteCondition reads StateKeyAction and maps it to the next node.
@@ -135,8 +144,9 @@ func clarifyNodeSkeleton(cfg *GraphConfig) graph.NodeFunc {
 			return nil, fmt.Errorf("clarify: missing query in state")
 		}
 
-		if cfg.Model != nil {
-			clarifyFn := nodes.NewClarifyNodeFunc(cfg.Model, cfg.Prompts, cfg.Config)
+		m := resolveModel(state, cfg.Model)
+		if m != nil {
+			clarifyFn := nodes.NewClarifyNodeFunc(m, cfg.Prompts, cfg.Config)
 			return clarifyFn(ctx, state)
 		}
 
@@ -153,37 +163,44 @@ func clarifyNodeSkeleton(cfg *GraphConfig) graph.NodeFunc {
 }
 
 func investigateNodeSkeleton(cfg *GraphConfig) graph.NodeFunc {
+	// A pre-configured runner (e.g. a mock) bypasses model selection entirely.
 	if cfg.InvestigateRunner != nil {
 		return nodes.NewInvestigateNodeFunc(cfg.InvestigateRunner)
 	}
-	if cfg.Model != nil {
-		var runner nodes.InvestigateRunner
-		if len(cfg.Tools) > 0 {
-			runner = nodes.NewRealInvestigateRunner(cfg.Model, cfg.Tools, cfg.Prompts, cfg.Config)
-		} else {
-			runner = nodes.NewSimpleLLMInvestigateRunner(cfg.Model, cfg.Prompts)
-		}
-		return nodes.NewInvestigateNodeFunc(runner)
-	}
-	// Skeleton fallback.
 	return func(ctx context.Context, state graph.State) (any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		messages, _ := graph.GetStateValue[[]model.Message](state, types.StateKeyMessages)
-		messages = append(messages, model.NewAssistantMessage("[Skeleton: investigation would happen here]"))
-		return graph.State{types.StateKeyMessages: messages}, nil
+
+		m := resolveModel(state, cfg.Model)
+		if m == nil {
+			// Skeleton fallback: no model configured.
+			messages, _ := graph.GetStateValue[[]model.Message](state, types.StateKeyMessages)
+			messages = append(messages, model.NewAssistantMessage("[Skeleton: investigation would happen here]"))
+			return graph.State{types.StateKeyMessages: messages}, nil
+		}
+
+		var runner nodes.InvestigateRunner
+		if len(cfg.Tools) > 0 {
+			runner = nodes.NewRealInvestigateRunner(m, cfg.Tools, cfg.Prompts, cfg.Config)
+		} else {
+			runner = nodes.NewSimpleLLMInvestigateRunner(m, cfg.Prompts)
+		}
+		return nodes.NewInvestigateNodeFunc(runner)(ctx, state)
 	}
 }
 
 func synthesizeNodeSkeleton(cfg *GraphConfig) graph.NodeFunc {
-	if cfg.Model != nil {
-		return nodes.NewSynthesizeNodeFunc(cfg.Model, cfg.Prompts, cfg.Config)
-	}
 	return func(ctx context.Context, state graph.State) (any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+
+		m := resolveModel(state, cfg.Model)
+		if m != nil {
+			return nodes.NewSynthesizeNodeFunc(m, cfg.Prompts, cfg.Config)(ctx, state)
+		}
+
 		messages, _ := graph.GetStateValue[[]model.Message](state, types.StateKeyMessages)
 		query, _ := graph.GetStateValue[string](state, types.StateKeyQuery)
 		report := fmt.Sprintf("# Research Report: %s\n\n[Skeleton: %d messages in context]", query, len(messages))

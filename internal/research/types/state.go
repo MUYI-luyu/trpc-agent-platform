@@ -27,6 +27,11 @@ const (
 	// StateKeyMessages holds the full conversation history ([]model.Message, append-only).
 	// Writers: Clarify + Investigate. Readers: Investigate (first round), Synthesize (report material).
 	StateKeyMessages = "research_messages"
+	// StateKeyHistory holds prior-turn session history ([]model.Message) restored
+	// from the session transcript by the platform layer. It carries the user
+	// queries and assistant answers of previous turns so follow-up questions are
+	// answered in context. Read-only during a run; written only by the platform.
+	StateKeyHistory = "research_history"
 	// StateKeyReport holds the final markdown report (string). Written by Synthesize.
 	StateKeyReport = "research_report"
 	// StateKeyMaxRounds is the maximum search rounds (int). Set by platform governance.
@@ -38,6 +43,10 @@ const (
 	// StateKeyFindings holds structured research findings extracted from tool
 	// results ([]Finding). Written by Investigate, consumed by Synthesize.
 	StateKeyFindings = "research_findings"
+	// StateKeyModel holds the LLM model for this request (model.Model). Set by
+	// the platform at runtime so a tenant's model selection can override the
+	// graph's default model. Not persisted.
+	StateKeyModel = "research_model"
 )
 
 // ─── Action constants ───────────────────────────────────────────────────
@@ -125,6 +134,11 @@ func NewResearchStateSchema() *graph.StateSchema {
 			Reducer: graph.DefaultReducer,
 			Default: func() any { return []model.Message{} },
 		}).
+		AddField(StateKeyHistory, graph.StateField{
+			Type:    reflect.TypeOf([]model.Message{}),
+			Reducer: graph.DefaultReducer,
+			Default: func() any { return []model.Message{} },
+		}).
 		AddField(StateKeyReport, graph.StateField{
 			Type:    reflect.TypeOf(""),
 			Reducer: graph.DefaultReducer,
@@ -141,6 +155,11 @@ func NewResearchStateSchema() *graph.StateSchema {
 		}).
 		AddField(StateKeyStreamWriter, graph.StateField{
 			Type:            reflect.TypeOf((*StreamWriter)(nil)).Elem(),
+			Reducer:         graph.DefaultReducer,
+			DisableDeepCopy: true,
+		}).
+		AddField(StateKeyModel, graph.StateField{
+			Type:            reflect.TypeOf((*model.Model)(nil)).Elem(),
 			Reducer:         graph.DefaultReducer,
 			DisableDeepCopy: true,
 		}).

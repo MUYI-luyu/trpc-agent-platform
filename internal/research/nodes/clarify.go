@@ -11,6 +11,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 
 	"github.com/MUYI-luyu/trpc-agent-platform/internal/research/types"
+	"github.com/MUYI-luyu/trpc-agent-platform/internal/telemetry"
 )
 
 // ─── Clarify types ───────────────────────────────────────────────────────
@@ -79,8 +80,13 @@ func NewClarifyNodeFunc(llm LLMClient, prompts *types.PromptSet, config *types.C
 		// Extract types.StreamWriter before the LLM call so we can stream in real-time.
 		sw, _ := graph.GetStateValue[types.StreamWriter](state, types.StateKeyStreamWriter)
 
+		// Restore prior-turn history (user queries + assistant answers) so
+		// follow-up questions are classified in context. May be empty on a
+		// session's first turn.
+		history, _ := graph.GetStateValue[[]model.Message](state, types.StateKeyHistory)
+
 		// Build and execute the LLM request with real-time streaming.
-		req := buildClarifyRequest(prompts.ClarifySystem, query, config)
+		req := buildClarifyRequest(prompts.ClarifySystem, query, history, config)
 		result, err := executeClarifyAndStream(ctx, llm, req, sw)
 		if err != nil {
 			return nil, fmt.Errorf("clarify: LLM call failed: %w", err)
@@ -109,14 +115,15 @@ func NewClarifyNodeFunc(llm LLMClient, prompts *types.PromptSet, config *types.C
 
 // ─── Request building ────────────────────────────────────────────────────
 
-func buildClarifyRequest(systemPrompt, query string, config *types.Config) *model.Request {
+func buildClarifyRequest(systemPrompt, query string, history []model.Message, config *types.Config) *model.Request {
 	t := config.EffectiveClarifyTemperature()
 	maxT := config.EffectiveClarifyMaxTokens()
+	messages := make([]model.Message, 0, len(history)+2)
+	messages = append(messages, model.NewSystemMessage(systemPrompt))
+	messages = append(messages, history...)
+	messages = append(messages, model.NewUserMessage(query))
 	return &model.Request{
-		Messages: []model.Message{
-			model.NewSystemMessage(systemPrompt),
-			model.NewUserMessage(query),
-		},
+		Messages: messages,
 		GenerationConfig: model.GenerationConfig{
 			Stream:      true,
 			Temperature: &t,
@@ -130,8 +137,12 @@ func buildClarifyRequest(systemPrompt, query string, config *types.Config) *mode
 // executeClarifyAndStream calls the LLM, aggregates the full response, then
 // sends a clean answer (or rejection/analysis) through sw as a single event.
 func executeClarifyAndStream(ctx context.Context, llm LLMClient, req *model.Request, sw types.StreamWriter) (*ClarifyResult, error) {
+	ctx, span := telemetry.SpanLLM(ctx, llm.Info().Name)
+	defer span.End()
+
 	eventCh, err := llm.GenerateContent(ctx, req)
 	if err != nil {
+		telemetry.RecordError(ctx, err)
 		return nil, fmt.Errorf("generate content: %w", err)
 	}
 
@@ -142,11 +153,17 @@ func executeClarifyAndStream(ctx context.Context, llm LLMClient, req *model.Requ
 	result := &ClarifyResult{Action: types.ActionAnswer} // default safe path
 	var reasoning strings.Builder
 	var lastContent string
+	var lastUsage *model.Usage
 	hasStreamed := false
 
 	for rsp := range eventCh {
+		if rsp.Usage != nil {
+			lastUsage = rsp.Usage
+		}
 		if rsp.Error != nil {
-			return nil, fmt.Errorf("clarify API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
+			err := fmt.Errorf("clarify API error: %s: %s", rsp.Error.Type, rsp.Error.Message)
+			telemetry.RecordError(ctx, err)
+			return nil, err
 		}
 
 		if len(rsp.Choices) == 0 {
@@ -169,6 +186,10 @@ func executeClarifyAndStream(ctx context.Context, llm LLMClient, req *model.Requ
 				lastContent = msg.Content
 			}
 		}
+	}
+
+	if lastUsage != nil {
+		telemetry.SetTokenUsage(ctx, lastUsage.PromptTokens, lastUsage.CompletionTokens)
 	}
 
 	result.Reasoning = reasoning.String()
